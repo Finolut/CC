@@ -178,10 +178,23 @@ if (btnGenQR) {
         const qrBox = document.getElementById('qrcode-display');
         qrBox.innerHTML = '';
         if (typeof QRCode !== 'undefined') {
-          new QRCode(qrBox, {
-            text: qr_token,
-            width: 200, height: 200, colorDark: "#0f172a", colorLight: "#ffffff"
-          });
+          // Mendukung library node-qrcode (CDN yang sedang dipasang)
+          if (typeof QRCode.toCanvas === 'function') {
+            const canvas = document.createElement('canvas');
+            QRCode.toCanvas(canvas, qr_token, {
+              width: 250, 
+              margin: 2,
+              color: { dark: '#0f172a', light: '#ffffff' }
+            }, function(err) {
+              if(!err) qrBox.appendChild(canvas);
+            });
+          } else {
+            // Fallback jika memakai library lama qrcodejs
+            new QRCode(qrBox, {
+              text: qr_token,
+              width: 250, height: 250, colorDark: "#0f172a", colorLight: "#ffffff"
+            });
+          }
         }
         showToast('QR Token Generated!', 'success');
       } else {
