@@ -309,23 +309,71 @@ function onScanSuccess(decodedText, decodedResult) {
 const btnCheckin = document.getElementById('btn-checkin');
 if (btnCheckin) {
   btnCheckin.addEventListener('click', async () => {
-    const qr_token = document.getElementById('manual-token').value;
-    const user_id = document.getElementById('user-id').value;
-    const course_id = document.getElementById('course-id').value;
-    const session_id = document.getElementById('session-id').value;
+    const qr_token_raw = document.getElementById('manual-token').value.trim();
+    const user_id = document.getElementById('user-id').value.trim();
+    const course_id = document.getElementById('course-id').value.trim();
+    const session_id = document.getElementById('session-id').value.trim();
 
-    if (!qr_token || !user_id) return showToast('NIM & Token wajib diisi!', 'error');
-
-    const payload = {
-      user_id, device_id: getDeviceId(),
-      course_id, session_id,
-      qr_token, ts: getTs()
-    };
+    if (!qr_token_raw || !user_id) return showToast('NIM & Token wajib diisi!', 'error');
 
     const btn = document.getElementById('btn-checkin');
     btn.innerText = 'Sending...';
 
     try {
+      let isUrl = qr_token_raw.startsWith('http://') || qr_token_raw.startsWith('https://');
+      let parsedToken = qr_token_raw;
+
+      // Fitur Universal: Ekstrak token / Auto-detect URL base jika target merupakan URL
+      if (isUrl) {
+        try {
+          const urlObj = new URL(qr_token_raw);
+          // Set otomatis Base URL jika kosong agar fleksibel
+          const globalUrlInput = document.getElementById('global-base-url');
+          if (globalUrlInput && !globalUrlInput.value) {
+            globalUrlInput.value = urlObj.origin + urlObj.pathname;
+            showToast('Auto-detect Base URL dari QR', 'info');
+          }
+          
+          if (urlObj.searchParams.has('token')) parsedToken = urlObj.searchParams.get('token');
+          else if (urlObj.searchParams.has('qr_token')) parsedToken = urlObj.searchParams.get('qr_token');
+          else if (urlObj.searchParams.has('id')) parsedToken = urlObj.searchParams.get('id');
+          
+          // Fallback: tembak URL langsung secara silent jika backend tsb murni Web App GAS mode GET
+          let getUrl = new URL(qr_token_raw);
+          getUrl.searchParams.set('user_id', user_id);
+          getUrl.searchParams.set('nim', user_id);
+          getUrl.searchParams.set('course_id', course_id);
+          getUrl.searchParams.set('session_id', session_id);
+          fetch(getUrl.toString(), { mode: 'no-cors' }).catch(() => {});
+        } catch (e) {}
+      }
+
+      // Menyiapkan Payload Super Lengkap (Alias segala format parameter)
+      const payload = {
+        user_id: user_id, 
+        nim: user_id, 
+        npm: user_id,
+        device_id: getDeviceId(),
+        course_id: course_id, 
+        makul: course_id,
+        session_id: session_id, 
+        sesi: session_id,
+        qr_token: parsedToken, 
+        token: parsedToken, 
+        ts: getTs()
+      };
+
+      // Injeksi parameter dari URL (misal ?mode=checkin) ke payload
+      // Supaya apiFetch mem-parsingnya ke query string e.parameter GAS 
+      if (isUrl) {
+        try {
+          let urlObj = new URL(qr_token_raw);
+          urlObj.searchParams.forEach((val, key) => {
+            if (!payload[key]) payload[key] = val;
+          });
+        } catch (e) {}
+      }
+
       const res = await apiFetch('/presence/checkin', {
         method: 'POST',
         body: JSON.stringify(payload)
@@ -335,10 +383,18 @@ if (btnCheckin) {
         showToast('Check-in Berhasil!', 'success');
         document.getElementById('status-result').classList.remove('hidden');
         const badge = document.getElementById('lbl-status');
-        badge.innerText = res.data.status;
-        badge.className = `badge status-${res.data.status}`;
+        badge.innerText = res.data.status || 'Hadir';
+        badge.className = `badge status-${(res.data.status || 'hadir').toLowerCase()}`;
+      } else {
+        showToast(`Error: ${res.error || 'Server menolak (invalid token)'}`, 'error');
       }
-    } catch (e) { console.error(e); } finally { btn.innerText = 'Check-in'; }
+    } catch (e) {
+      console.error(e);
+      let msg = e.message.replace('ServerError:', '').replace('EndpointError:', '').trim();
+      showToast(msg, 'error');
+    } finally {
+      btn.innerText = 'Check-in';
+    }
   });
 }
 
