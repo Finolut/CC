@@ -36,15 +36,6 @@ async function apiFetch(endpoint, options = {}) {
     queryStr = "&" + queryStr; // parameter tambahan
   }
 
-  // Format URL khusus untuk GAS Swap Test
-  const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
-
-  // 1. urlPrimary: menggunakan parameter query
-  let urlPrimary = `${cleanBaseUrl}?endpoint=${path}${queryStr}`;
-  // 2. urlFallback: menggunakan REST style (path)
-  let fallbackQueryStr = queryStr ? "?" + queryStr.substring(1) : "";
-  let urlFallback = `${cleanBaseUrl}/${path}${fallbackQueryStr}`;
-
   const isPost = options.method === 'POST';
   const fetchOptions = {
     method: options.method || 'GET',
@@ -58,22 +49,102 @@ async function apiFetch(endpoint, options = {}) {
     fetchOptions.headers['Content-Type'] = 'text/plain';
   }
 
+  let extraQueryParams = "";
+  let actionSegment = path.split('/').pop(); // e.g. 'generate', 'checkin'
+
+  // Injeksikan endpoint/action ke dalam body JSON jika POST, untuk kompatibilitas kelompok lain
+  if (isPost && fetchOptions.body && typeof fetchOptions.body === 'string') {
+    try {
+      let bodyObj = JSON.parse(fetchOptions.body);
+      // Agar backend yang butuh action di payload JSON tetap bisa baca
+      bodyObj.action = path;
+      bodyObj.endpoint = path;
+      fetchOptions.body = JSON.stringify(bodyObj);
+
+      // Tambahkan payload ke param URL agar bisa dibaca via e.parameter di GAS (fallback e.parameter.action dsb)
+      Object.keys(bodyObj).forEach(key => {
+        if (typeof bodyObj[key] !== 'object') {
+          const valStr = String(bodyObj[key]);
+          if (valStr.length < 500) { // amankan param yg terlalu besar agar tidak error
+            extraQueryParams += `&${key}=${encodeURIComponent(valStr)}`;
+          }
+        }
+      });
+    } catch (e) { }
+  }
+
+  // Format URL khusus untuk GAS Swap Test
+  const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+
+  // 1. urlPrimary: menggunakan parameter query (inject endpoint & action)
+  let urlPrimary = `${cleanBaseUrl}?endpoint=${path}&action=${path}&action2=${actionSegment}${queryStr}${extraQueryParams}`;
+  // 2. urlFallback: menggunakan REST style (path)
+  let fallbackQueryStr = queryStr ? "?" + queryStr.substring(1) : "";
+  let urlFallback = `${cleanBaseUrl}/${path}${fallbackQueryStr}${extraQueryParams}`;
+
   const doFetch = async (url) => {
-    console.log(`[API Request] ${fetchOptions.method} ${url}`, isPost && options.body ? JSON.parse(options.body) : '');
+    console.log(`[API Request] ${fetchOptions.method} ${url}`, isPost && fetchOptions.body ? JSON.parse(fetchOptions.body) : '');
 
     const response = await fetch(url, fetchOptions);
     const rawText = await response.text();
-    console.log(`[API Raw Response from ${url}]`, rawText);
+    console.log(`[API Raw Response]`, rawText);
 
     let result;
     try {
-      result = JSON.parse(rawText);
+      let parsed = JSON.parse(rawText);
+
+      if (Array.isArray(parsed)) {
+        // Normalized Array response (contoh fallback: history raw array)
+        result = { ok: true, data: { items: parsed } };
+      } else {
+        result = parsed;
+        // --- NORMALIZE JSON RESPONSE FORMATS ---
+        if (typeof result.ok === 'undefined') {
+          result.ok = (result.status === 'success' || result.status === true || result.success === true || result.code === 200 || !result.error);
+        }
+
+        // Fix Data nesting (jika output flat tanpa object .data)
+        if (result.ok && !result.data) {
+          let clone = { ...result };
+          delete clone.ok; delete clone.error; delete clone.status; delete clone.success; delete clone.message; delete clone.code;
+          if (result.token && !clone.qr_token) clone.qr_token = result.token;
+          // Gunakan object sisa sbg data, fallback message jika kosong
+          result.data = Object.keys(clone).length > 0 ? clone : { message: result.message || "OK", status: result.message || "OK" };
+        } else if (result.ok && result.data) {
+          if (result.data.token && !result.data.qr_token) result.data.qr_token = result.data.token;
+          if (result.data.state && !result.data.status) result.data.status = result.data.state;
+        }
+
+        // Fix Errors format
+        if (!result.ok && !result.error) {
+          result.error = result.message || "Unknown server error";
+        }
+      }
     } catch (e) {
-      throw new Error(`InvalidJSON: ${rawText.substring(0, 50)}`);
+      // --- NORMALIZE RAW TEXT FORMAT ---
+      console.warn("Response is not JSON, applying Raw Format Fallback", e);
+      const strLower = rawText.toLowerCase();
+      // Deteksi error text "action post tidak di kenali" dsb
+      const isErr = strLower.includes('error') || strLower.includes('gagal') || strLower.includes('tidak di kenali') || strLower.includes('not found') || strLower.includes('invalid') || strLower.includes('undefined');
+
+      if (isErr) {
+        throw new Error(`ServerError: (Raw Message) ${rawText.substring(0, 100)}`);
+      }
+
+      // Treat as raw success token / success message
+      result = {
+        ok: true,
+        data: {
+          qr_token: rawText.trim(),
+          status: rawText.trim(),
+          message: rawText.trim(),
+          items: []
+        }
+      };
     }
 
     if (result && !result.ok && result.error) {
-      const errLower = result.error.toLowerCase();
+      const errLower = String(result.error).toLowerCase();
       if (errLower.includes('unknown endpoint') || errLower.includes('unknown_endpoint')) {
         throw new Error(`EndpointError: ${result.error}`);
       }
@@ -92,7 +163,7 @@ async function apiFetch(endpoint, options = {}) {
     // Jika benar-benar error dari logic bisnis server (seperti token_expired), jangan di-retry ke fallback
     if (error.message.startsWith('ServerError:')) {
       const actualError = error.message.replace('ServerError: ', '');
-      showToast(`${actualError}`, 'error'); // Tampilkan error asli server
+      showToast(`${actualError}`, 'error'); // Tampilkan error asli
       throw new Error(actualError);
     }
 
@@ -106,9 +177,6 @@ async function apiFetch(endpoint, options = {}) {
       if (finalMsg.startsWith('ServerError:')) {
         finalMsg = finalMsg.replace('ServerError: ', '');
         showToast(`${finalMsg}`, 'error');
-      } else if (finalMsg.startsWith('InvalidJSON:')) {
-        showToast('Response Server bukan format JSON yang valid.', 'error');
-        finalMsg = "Invalid JSON Response";
       } else {
         showToast(`Gagal menghubungi server: ${finalMsg}`, 'error');
       }
@@ -181,9 +249,9 @@ if (btnGenQR) {
           // Menggunakan qrcodejs (Library standar Google Apps Script & web pure)
           new QRCode(qrBox, {
             text: qr_token,
-            width: 250, 
-            height: 250, 
-            colorDark: "#0b0f19", 
+            width: 250,
+            height: 250,
+            colorDark: "#0b0f19",
             colorLight: "#ffffff",
             correctLevel: QRCode.CorrectLevel.H
           });
