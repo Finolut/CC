@@ -59,6 +59,7 @@ async function apiFetch(endpoint, options = {}) {
       // Agar backend yang butuh action di payload JSON tetap bisa baca
       bodyObj.action = path;
       bodyObj.endpoint = path;
+      bodyObj.path = path; // Alias khusus kelompok ArthaFreestyle dkk
       fetchOptions.body = JSON.stringify(bodyObj);
 
       // Tambahkan payload ke param URL agar bisa dibaca via e.parameter di GAS (fallback e.parameter.action dsb)
@@ -76,8 +77,8 @@ async function apiFetch(endpoint, options = {}) {
   // Format URL khusus untuk GAS Swap Test
   const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
 
-  // 1. urlPrimary: menggunakan parameter query (inject endpoint & action)
-  let urlPrimary = `${cleanBaseUrl}?endpoint=${path}&action=${path}&action2=${actionSegment}${queryStr}${extraQueryParams}`;
+  // 1. urlPrimary: menggunakan parameter query (inject endpoint & action & path)
+  let urlPrimary = `${cleanBaseUrl}?endpoint=${path}&path=${path}&action=${path}&action2=${actionSegment}${queryStr}${extraQueryParams}`;
   // 2. urlFallback: menggunakan REST style (path)
   let fallbackQueryStr = queryStr ? "?" + queryStr.substring(1) : "";
   let urlFallback = `${cleanBaseUrl}/${path}${fallbackQueryStr}${extraQueryParams}`;
